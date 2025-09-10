@@ -1,9 +1,3 @@
-# ImmRes1_decomposed_walkthrough.R
-#
-# This script breaks down the analysis from `ImmRes1_denovoCellTypeSig.R` into
-# sequential, runnable sections. Each section has defined inputs and outputs,
-# allowing you to understand and adapt the workflow for your own analysis.
-#
 # INSTRUCTIONS:
 # 1. Make sure this script is in the same directory as the other ImmRes scripts.
 # 2. Run each section sequentially.
@@ -31,7 +25,7 @@ source('ImmRes_source.R')
 
 # --- INPUT ---
 # - A pre-processed single-cell RNA-seq object.
-#   File: ../Data/scData/Mel.all.data.QC.rds
+#   File: ./Data/scData/Mel.all.data.QC.rds
 
 # --- OUTPUT ---
 # - `r`: The loaded single-cell data object.
@@ -40,11 +34,29 @@ source('ImmRes_source.R')
 print("--- SECTION 1: Loading data and running pairwise DE ---")
 
 # Load the main single-cell dataset
-r <- readRDS("../Data/scData/Mel.all.data.QC.rds")
+r <- readRDS("./Data/scData/Mel.all.data.QC.rds")
 
 # --- INSPECT THE 'r' OBJECT ---
 print("--- Structure of the loaded 'r' object: ---")
 str(r, max.level = 1) # Use max.level=1 to see just the top-level elements
+
+
+# --- Convert to a SingleCellExperiment Object ---
+
+# First, ensure the SingleCellExperiment package is installed.
+# if (!requireNamespace("SingleCellExperiment", quietly = TRUE)) {
+#   BiocManager::install("SingleCellExperiment")
+# }
+library(SingleCellExperiment)
+
+print("Creating SingleCellExperiment object...")
+sce_obj <- SingleCellExperiment(assays = list(counts = r$cd),
+                                colData = data.frame(cells = r$cells, cell.types = r$cell.types,
+                                samples = r$samples, treated = r$treated))
+
+print("SingleCellExperiment object created. Inspect 'sce_obj'.")
+print("--- Section 6 Complete. ---")
+
 
 # Get all unique cell types and create all possible pairs for comparison
 cell.types.u <- sort(unique(r$cell.types))
