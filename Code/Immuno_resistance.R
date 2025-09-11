@@ -31,113 +31,84 @@ source('ImmRes_source.R')
 # - `r`: The loaded single-cell data object.
 # - `de_results`: A list containing the Z-scores from all pairwise comparisons.
 
-print("--- SECTION 1: Loading data and running pairwise DE ---")
+print("--- SECTION 1: Loading data ---")
 
 # Load the main single-cell dataset
 r <- readRDS("./Data/scData/Mel.all.data.QC.rds")
-
-# --- INSPECT THE 'r' OBJECT ---
-print("--- Structure of the loaded 'r' object: ---")
 str(r, max.level = 1) # Use max.level=1 to see just the top-level elements
-
-
-# --- Convert to a SingleCellExperiment Object ---
-
-# First, ensure the SingleCellExperiment package is installed.
-# if (!requireNamespace("SingleCellExperiment", quietly = TRUE)) {
-#   BiocManager::install("SingleCellExperiment")
-# }
-library(SingleCellExperiment)
-
-print("Creating SingleCellExperiment object...")
 sce <- SingleCellExperiment(assays = list(counts = r$cd),
                             colData = data.frame(cells = r$cells, cell.types = r$cell.types,
                             samples = r$samples, treated = r$treated))
 
-print("SingleCellExperiment object created. Inspect 'sce_obj'.")
-print("--- Section 6 Complete. ---")
-
-
 # -----------------------------------------------------------------------------
-# 2. Quality Control (QC)
+# 2. Skip Quality Control (QC) as data is pre-QC'd
 # -----------------------------------------------------------------------------
-
 # Identify ribosomal genes.
-is_ribo <- grepl("^RPL|^RPS", rownames(sce))
-message(sprintf("Found %d ribosomal genes.", sum(is_ribo)))
+# is_ribo <- grepl("^RPL|^RPS", rownames(sce))
+# message(sprintf("Found %d ribosomal genes.", sum(is_ribo)))
 
 # Calculate comprehensive QC metrics and add QC metrics to the SingleCellExperiment object
-sce <- addPerCellQC(sce, subsets = list(
-    Ribo= is_ribo))
+# sce <- addPerCellQC(sce, subsets = list(Ribo= is_ribo))
 
 # The QC metrics are in colData(sce)
-qc_metrics <- colData(sce)
-
+# qc_metrics <- colData(sce)
+# qc_metrics
 # Determine QC thresholds adaptively using MADs (Median Absolute Deviations)
 # We filter on low library size, low number of features, and high ribosomal content.
-qc_filters <- perCellQCFilters(qc_metrics,
-    sub.fields=c("sum", "detected", "subsets_Ribo_percent"),
-    nmads = 3
-)
+# qc_filters <- perCellQCFilters(qc_metrics,
+#     sub.fields=c("sum", "detected", "subsets_Ribo_percent"),
+#     nmads = 3)
 
 # Summarize how many cells are filtered by each criterion
-colSums(as.matrix(qc_filters))
+# colSums(as.matrix(qc_filters))
 
 # Add the final discard decision to the colData
-colData(sce)$discard <- qc_filters$discard
+# colData(sce)$discard <- qc_filters$discard
 
 # Visualize QC metrics
 # Library size distribution
-p1 <- plotColData(sce, y = "sum", colour_by = "discard") + 
-    scale_y_log10() + ggtitle("Library Size")
+# p1 <- plotColData(sce, y = "sum", colour_by = "discard") + scale_y_log10() + ggtitle("Library Size")
 
 # Number of expressed genes
-p2 <- plotColData(sce, y = "detected", colour_by = "discard") + 
-    scale_y_log10() + ggtitle("Detected Features")
+# p2 <- plotColData(sce, y = "detected", colour_by = "discard") + scale_y_log10() + ggtitle("Detected Features")
 
 # Ribosomal gene proportion
-p3 <- plotColData(sce, y = "subsets_Ribo_percent", colour_by = "discard") + 
-    ggtitle("Ribosomal %")
+# p3 <- plotColData(sce, y = "subsets_Ribo_percent", colour_by = "discard") + ggtitle("Ribosomal %")
 
 # Arrange plots
-gridExtra::grid.arrange(p1, p2, p3, ncol=1)
+# gridExtra::grid.arrange(p1, p2, p3, ncol=1)
 
 
 # Filter cells based on the discard flag
-sce_filtered <- sce[, !sce$discard]
-message(sprintf("Cells before filtering: %d", ncol(sce)))
-message(sprintf("Cells after filtering: %d", ncol(sce_filtered)))
-message(sprintf("Removed %d cells.", sum(sce$discard)))
-
-
+# sce_filtered <- sce[, !sce$discard]
+# message(sprintf("Cells before filtering: %d", ncol(sce)))
+# message(sprintf("Cells after filtering: %d", ncol(sce_filtered)))
+# message(sprintf("Removed %d cells.", sum(sce$discard)))
+# 
+# 
 # Save QC results
-saveRDS(qc_metrics, "results/qc_metrics/melanoma/melanoma_qc_metrics.rds")  
-saveRDS(qc_filters, "results/qc_metrics/melanoma/melanoma_qc_filters.rds")
-saveRDS(sce_filtered, "results/melanoma/melanoma_sce_filtered.rds")
+# saveRDS(qc_metrics, "results/qc_metrics/melanoma/melanoma_qc_metrics.rds")  
+# saveRDS(qc_filters, "results/qc_metrics/melanoma/melanoma_qc_filters.rds")
+# saveRDS(sce_filtered, "results/melanoma/melanoma_sce_filtered.rds")
 
-qc_metrics <- readRDS("results/qc_metrics/melanoma/melanoma_qc_metrics.rds")
-qc_filters <- readRDS("results/qc_metrics/melanoma/melanoma_qc_filters.rds")
-sce_filtered <- readRDS("results/melanoma/melanoma_sce_filtered.rds")
 # -----------------------------------------------------------------------------
 # 3. Normalization
 # -----------------------------------------------------------------------------
 # Use deconvolution-based size factors for more accurate normalization.
-set.seed(1234)
-clusters <- quickCluster(sce_filtered)
+set.seed(111)
+clusters <- quickCluster(sce)
 summary(clusters)
-sce_filtered <- computeSumFactors(sce_filtered, clusters=clusters)
-
+sce <- computeSumFactors(sce, clusters=clusters)
 # Check the size factors
-summary(sizeFactors(sce_filtered))
-
+summary(sizeFactors(sce))
 # Apply log-transformation to the counts
-sce_filtered <- logNormCounts(sce_filtered)
+sce <- logNormCounts(sce)
 
 # -----------------------------------------------------------------------------
 # 4. Feature Selection
 # -----------------------------------------------------------------------------
 # Identify highly variable genes (HVGs) to focus on biologically meaningful variation.
-dec <- modelGeneVar(sce_filtered)
+dec <- modelGeneVar(sce)
 
 # Get top 2000 most variable genes
 top_hvgs <- getTopHVGs(dec, n=2000)
@@ -152,11 +123,11 @@ curve(metadata(dec)$trend(x), col="dodgerblue", add=TRUE)
 # -----------------------------------------------------------------------------
 # Perform PCA on the HVGs to capture the main axes of variation.
 set.seed(1234)
-sce_filtered <- runPCA(sce_filtered, subset_row=top_hvgs)
+sce <- runPCA(sce, subset_row=top_hvgs)
 
 # Run UMAP and t-SNE for visualization. We use the first 20 PCs.
-sce_filtered <- runUMAP(sce_filtered, dimred="PCA", n_dimred=20)
-sce_filtered <- runTSNE(sce_filtered, dimred="PCA", n_dimred=20)
+sce <- runUMAP(sce, dimred="PCA", n_dimred=20)
+sce <- runTSNE(sce, dimred="PCA", n_dimred=20)
 
 
 # -----------------------------------------------------------------------------
@@ -164,21 +135,21 @@ sce_filtered <- runTSNE(sce_filtered, dimred="PCA", n_dimred=20)
 # -----------------------------------------------------------------------------
 # Perform graph-based clustering on the PCA results.
 # This builds a shared nearest-neighbor graph and identifies communities (clusters).
-g <- buildSNNGraph(sce_filtered, k=10, use.dimred="PCA")
+g <- buildSNNGraph(sce, k=10, use.dimred="PCA")
 clusters_louvain <- igraph::cluster_louvain(g)
-colLabels(sce_filtered) <- factor(clusters_louvain$membership)
+colLabels(sce) <- factor(clusters_louvain$membership)
 
 # Visualize clusters on the UMAP plot
-plotReducedDim(sce_filtered, "UMAP", colour_by="label", text_by="label") +
+plotReducedDim(sce, "UMAP", colour_by="cell.types", text_by="cell.types") +
     ggtitle("UMAP colored by Louvain Clusters")
 # export the figure
-ggsave("results/melanoma/melanoma_umap_clusters.png", width=10, height=10)
+ggsave("./Images/melanoma_umap_clusters.png", width=10, height=10)
 
 # Visualize clusters on the t-SNE plot
-plotReducedDim(sce_filtered, "TSNE", colour_by="label", text_by="label") +
+plotReducedDim(sce, "TSNE", colour_by="cell.types", text_by="label") +
     ggtitle("tSNE colored by Louvain Clusters")
 # export the figure
-ggsave("results/melanoma/melanoma_tSNE_clusters.png", width=10, height=10)
+ggsave("./Images/melanoma_tSNE_clusters.png", width=10, height=10)
 
 # -----------------------------------------------------------------------------
 # 6.1. Investigating Cluster Drivers (Patient Effects)
@@ -215,10 +186,11 @@ print(chi_sq_test)
 # -----------------------------------------------------------------------------
 # Find marker genes for each cluster to help identify cell types.
 # We use a Wilcoxon rank-sum test to find genes upregulated in each cluster vs. others.
-markers <- findMarkers(sce_filtered, groups=colLabels(sce_filtered), test.type="wilcox", direction="up")
-
+markers <- findMarkers(sce, groups=colData(sce)$cell.types, test.type="wilcox", direction="any")
+markers
 # Example: View top markers for cluster 1
-cluster1_markers <- markers[["1"]]
+Bcell_markers <- markers[["B.cell"]]
+Bcell_markers
 head(cluster1_markers)
 
 
@@ -253,15 +225,16 @@ top_markers <- lapply(markers, function(x) {
     sig_markers <- rownames(x_df[x_df$FDR < 0.05, ])
     head(sig_markers, 10)
 })
-
+top_markers
 # Plot the heatmap
-plotHeatmap(sce_filtered, 
+p_heatmap <- plotHeatmap(sce,
             features=unique(unlist(top_markers)),
-            columns=order(colLabels(sce_filtered)),
-            colour_columns_by=c("label", "cell_type_main"),
+            columns=order(colData(sce)$cell.types),
+            colour_columns_by=c("cell.types"),
+            cluster_cols=FALSE,
             cluster_rows=TRUE,
             show_colnames=FALSE)
-
+ggsave("./Images/melanoma_heatmaps.png", plot = p_heatmap, width=10, height=10)
 # Save final results
 saveRDS(sce_filtered, file="results/melanoma/melanoma_analyzed.rds")
 saveRDS(markers, file="results/melanoma/melanoma_cluster_markers.rds")
