@@ -247,3 +247,97 @@ distribution_plot <- ggplot(distribution_plot_data, aes(x = lineage_group, y = d
 ggsave("./Images/top5_skin_specific_genes_distribution_with_pvals.png", plot = distribution_plot, width = 12, height = 5)
 message("Distribution plot with p-values saved to ./Images/top5_skin_specific_genes_distribution_with_pvals.png")
 print(distribution_plot)
+
+# --- Part 1i: Calculate Essential Gene Correlation within Skin Lineage ---
+message("\n--- Calculating correlation of essential genes within Skin lineage ---")
+
+# 1. Filter the data to include only Skin lineage cell lines.
+skin_essential_data <- depmap_essential_annotated %>%
+  filter(OncotreeLineage == "Skin")
+
+message(sprintf("Found %d Skin lineage cell lines for correlation analysis.", nrow(skin_essential_data)))
+
+# 2. Prepare a numeric matrix for the correlation function.
+# We select only the gene columns.
+skin_essential_matrix <- skin_essential_data %>%
+  select(-ModelID, -OncotreeLineage) %>%
+  as.matrix()
+
+# 3. Calculate the pairwise correlation matrix between all genes (columns).
+# 'pairwise.complete.obs' handles any missing values.
+skin_gene_cor <- cor(skin_essential_matrix, use = "pairwise.complete.obs")
+
+# 4. Visualize the correlation matrix as a heatmap.
+# This helps to identify blocks of highly correlated (co-dependent) genes.
+# We save the output of pheatmap to an object to access the clustering information.
+cor_heatmap_obj <- pheatmap(
+  skin_gene_cor,
+  main = "Correlation of Essential Gene Dependencies in Skin Lineage",
+  show_rownames = FALSE, # Too many genes to show
+  show_colnames = FALSE,
+  filename = "./Images/skin_lineage_essential_gene_correlation_heatmap.png",
+  width = 8, height = 8
+)
+
+message("Correlation heatmap saved to ./Images/skin_lineage_essential_gene_correlation_heatmap.png")
+
+# --- Part 1j: Extract Gene Clusters from Correlation Heatmap ---
+message("\n--- Extracting gene clusters from the correlation heatmap ---")
+
+# The pheatmap object `cor_heatmap_obj` contains the hierarchical clustering results.
+# We can "cut" the dendrogram to define our gene clusters.
+
+# 1. Define the number of clusters you want to extract.
+# This is often decided by visually inspecting the dendrogram on the heatmap.
+# Let's choose 6 for this example. You can adjust this number.
+num_clusters <- 100
+
+# 2. Cut the column's hierarchical tree (`tree_col`) into the desired number of clusters.
+gene_clusters <- cutree(cor_heatmap_obj$tree_col, k = num_clusters)
+
+# `gene_clusters` is now a named vector where names are genes and values are cluster IDs.
+
+# 3. To see the genes in a specific cluster (e.g., cluster 1):
+cluster_1_genes <- names(gene_clusters[gene_clusters == 1])
+message(sprintf("\nFound %d genes in Cluster 1 (example):", length(cluster_1_genes)))
+print(head(cluster_1_genes))
+
+# You can also create a list containing all clusters for easy access
+all_gene_clusters <- split(names(gene_clusters), gene_clusters)
+message("\nSummary of number of genes per cluster:")
+cluster_sizes <- sapply(all_gene_clusters, length)
+print(cluster_sizes)
+
+# 4. Filter out clusters that are too small (e.g., fewer than 10 genes)
+min_cluster_size <- 10
+filtered_gene_clusters <- all_gene_clusters[cluster_sizes >= min_cluster_size]
+message(sprintf("\nKeeping %d clusters with %d or more genes for further analysis.", 
+                length(filtered_gene_clusters), min_cluster_size))
+
+# --- Part 1k: Identify the Most Tightly Correlated Cluster ---
+message("\n--- Finding the most tightly correlated gene cluster ---")
+
+# To quantify how "tight" a cluster is, we can calculate the average
+# pairwise correlation among all genes within that cluster.
+# We will now use the 'filtered_gene_clusters' list.
+
+# 1. Use sapply to iterate over each filtered cluster's gene list.
+avg_cluster_cor <- sapply(filtered_gene_clusters, function(genes_in_cluster) {
+  # Subset the main correlation matrix to only the genes in the current cluster
+  cluster_cor_matrix <- skin_gene_cor[genes_in_cluster, genes_in_cluster]
+  
+  # To calculate the mean correlation, we only use the values in the upper
+  # triangle of the matrix. This avoids including the diagonal (which is always 1)
+  # and double-counting pairs (since cor(A,B) == cor(B,A)).
+  # We also handle the case of a cluster having only one gene.
+  if (length(genes_in_cluster) > 1) {
+    mean(cluster_cor_matrix[upper.tri(cluster_cor_matrix)])
+  }
+})
+
+message("\nAverage internal correlation for each cluster:")
+print(sort(avg_cluster_cor, decreasing = TRUE))
+
+message(sprintf("\nCluster %s is the most tightly correlated with an average internal correlation of %.3f.",
+                names(which.max(avg_cluster_cor)), max(avg_cluster_cor, na.rm = TRUE)))
+all_gene_clusters[3]

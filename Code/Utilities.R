@@ -30,7 +30,16 @@ install_and_load_packages <- function(bioc_pkgs = NULL, cran_pkgs = NULL) {
 bioc_packages <- c("SingleCellExperiment", "scuttle", "scran", "scater", "uwot", 
                    "rtracklayer", "DropletUtils", "batchelor", "bluster", "ensembldb", 
                    "org.Mm.eg.db", "org.Hs.eg.db", "DropletTestFiles", "scRNAseq", "AnnotationHub",
-                   "PCAtools", "celldex", "SingleR", "TENxPBMCData", "depmap")
-cran_packages <- c("uwot", "dynamicTreeCut", "dplyr", "pheatmap", "Seurat")
+                   "PCAtools", "celldex", "SingleR", "TENxPBMCData", "depmap", "ComplexHeatmap")
+cran_packages <- c("uwot", "dynamicTreeCut", "dplyr", "pheatmap", "Seurat", "ggplot2", 
+                   "gridExtra", "RColorBrewer", "tidyr", "tibble", "magrittr", "ggrepel")
 
 install_and_load_packages(bioc_pkgs = bioc_packages, cran_pkgs = cran_packages)
+
+
+library(dplyr)
+library(tibble)
+library(pheatmap)
+library(RColorBrewer)
+library(tidyr)
+library(ggplot2)
