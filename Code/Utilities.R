@@ -37,9 +37,10 @@ cran_packages <- c("uwot", "dynamicTreeCut", "dplyr", "pheatmap", "Seurat", "ggp
 install_and_load_packages(bioc_pkgs = bioc_packages, cran_pkgs = cran_packages)
 
 
+# 1. Load Required Libraries
+library(ComplexHeatmap)
+library(grid)
 library(dplyr)
 library(tibble)
-library(pheatmap)
-library(RColorBrewer)
-library(tidyr)
-library(ggplot2)
+library(tidyr) # For separate_rows
+library(circlize) # For colorRamp2
