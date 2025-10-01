@@ -32,7 +32,7 @@ install_and_load_packages <- function(bioc_pkgs = NULL, cran_pkgs = NULL) {
 
 
 bioc_packages <- c("SingleCellExperiment", "scuttle", "scran", "scater", "rtracklayer", 
-                   "DropletUtils", "batchelor", "bluster", "ensembldb",
+                   "DropletUtils", "batchelor", "bluster", "ensembldb", "DESeq2", "clusterProfiler",
                    "org.Mm.eg.db", "org.Hs.eg.db", "DropletTestFiles", "scRNAseq", "AnnotationHub",
                    "PCAtools", "celldex", "SingleR", "TENxPBMCData", "depmap", "ComplexHeatmap")
 cran_packages <- c("uwot", "dynamicTreeCut", "dplyr", "pheatmap", "Seurat", "ggplot2", 

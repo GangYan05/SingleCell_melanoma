@@ -2,6 +2,7 @@
 library(ComplexHeatmap)
 library(circlize) # For colorRamp2
 library(dplyr) # For data manipulation
+library(clusterProfiler) # For GO enrichment analysis
 library(DESeq2) # For differential expression analysis
 
 # --- Part 1: Alteration Data and OncoPrint Generation ---
@@ -152,19 +153,38 @@ print("--- OncoPrint successfully generated and saved as oncoprint.jpg ---")
 
 
 
+# 9. Generate a PCA plot
+
+vsd <- vst(dds, blind=FALSE)
+pcaData <- plotPCA(vsd, intgroup="groups", returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color=groups)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  ggtitle("PCA plot of samples") +
+  theme_bw()
+
+# Save the PCA plot to a file
+ggsave("PCA_plot.jpg", width = 8, height = 6, units = "in", dpi = 300)
+
+
+
+
+
 # --- Part 2: RNA Data Analysis ---
 # This section is for parsing and analyzing the RNA-seq data from the series matrix file.
 print("--- Part 2: Parsing RNA-seq metadata (placeholder for full analysis) ---")
 
 # Load the raw series matrix file as lines
-rna_data_matrix_lines <- readLines('./Data/molecular_pattern/GSE244982_series_matrix.txt')
+rna_data_matrix_lines <- readLines("./Data/molecular_pattern/GSE244982_series_matrix.txt")
 
-# Find the line with sample IDs (GEO accession numbers)
-sample_id_line_idx <- grep("^!Sample_geo_accession", rna_data_matrix_lines)
+# Find the line with sample IDs
+sample_id_line_idx <- grep("^!Sample_title", rna_data_matrix_lines)
 if (length(sample_id_line_idx) > 0) {
     sample_id_line <- rna_data_matrix_lines[sample_id_line_idx]
     sample_ids_from_matrix <- strsplit(sample_id_line, "\t")[[1]][-1] # Split by tab, remove first element
-    # Clean the sample IDs by removing quotes
     sample_ids_from_matrix <- gsub('"', '', sample_ids_from_matrix)
 
     # Initialize a list to store metadata for each sample
@@ -183,7 +203,6 @@ if (length(sample_id_line_idx) > 0) {
         for (i in seq_along(char_values)) {
             sample_id <- sample_ids_from_matrix[i]
             char_str <- char_values[i]
-
             char_str_clean <- gsub('"', '', char_str) # Remove quotes
             parts <- strsplit(char_str_clean, ": ", fixed = TRUE)[[1]] # Split by ": "
 
@@ -210,6 +229,9 @@ if (length(sample_id_line_idx) > 0) {
     )
     colnames(rna_meta_df) <- all_keys
     rownames(rna_meta_df) <- sample_ids_from_matrix
+    
+    # Clean the rownames of rna_meta_df by removing quotes
+    rownames(rna_meta_df) <- gsub('"', '', rownames(rna_meta_df))
 
     print("Successfully parsed RNA-seq metadata. First 5 rows:")
     print(head(rna_meta_df, 5))
@@ -266,8 +288,176 @@ rnaseq_for_dea <- rnaseq_aligned[, rownames(meta_for_dea)]
 
 # Create a DESeqDataSet object
 dds <- DESeqDataSetFromMatrix(countData = rnaseq_for_dea,
-                              colData = meta_for_dea,
-                              design = ~ groups)
+    colData = meta_for_dea,
+    design = ~ groups)
 
 print("DESeq2 object 'dds' created successfully. Ready for differential expression analysis.")
 print("The 'mucosal' group is retained in 'rna_meta_aligned' for separate analysis (e.g., as an immune-cold reference).")
+
+# 2.4 Perform Differential Expression Analysis (DEA)
+print("--- 2.4: Performing Differential Expression Analysis ---")
+
+# Run DESeq2 without estimating size factors or applying VST/rlog
+dds <- estimateSizeFactors(dds, type = "poscounts")  # Use 'poscounts' to avoid errors with log-transformed data
+dds <- DESeq(dds, fitType = "parametric", sfType = "poscounts",
+    minReplicatesForReplace = Inf) # Specify fitType and sfType
+
+print("DESeq2 analysis completed successfully.")
+
+
+# Function to extract and print results for a given contrast
+get_and_print_results <- function(dds, group1, group2) {
+    res <- results(dds, contrast = c("groups", group1, group2))
+    resOrdered <- res[order(res$pvalue), ]
+    print(paste("Top genes for:", group1, "vs", group2))
+    print(head(resOrdered, 10))
+    return(res)
+}
+
+# Perform pairwise comparisons
+group1 <- "anti-CTLA4 resistant"
+group2 <- "anti-PD1 resistant"
+group3 <- "anti-PD1 resistant, BRAFi day7"
+
+# anti-CTLA4 resistant vs. anti-PD1 resistant
+res_CTLA4_vs_PD1 <- get_and_print_results(dds, group1, group2)
+
+# anti-CTLA4 resistant vs. anti-PD1 resistant, BRAFi day7
+res_CTLA4_vs_BRAFi <- get_and_print_results(dds, group1, group3)
+
+# anti-PD1 resistant vs. anti-PD1 resistant, BRAFi day7
+res_PD1_vs_BRAFi <- get_and_print_results(dds, group2, group3)
+
+
+# Summary of the results for each group
+summary(res_CTLA4_vs_PD1)
+summary(res_CTLA4_vs_BRAFi)
+summary(res_PD1_vs_BRAFi)
+
+# Count significant genes (p-value < 0.05) for each comparison
+sig_CTLA4_vs_PD1 <- sum(res_CTLA4_vs_PD1$pvalue < 0.05, na.rm = TRUE)
+sig_CTLA4_vs_BRAFi <- sum(res_CTLA4_vs_BRAFi$pvalue < 0.05, na.rm = TRUE)
+sig_PD1_vs_BRAFi <- sum(res_PD1_vs_BRAFi$pvalue < 0.05, na.rm = TRUE)
+
+print(paste("Number of significant genes (p < 0.05) for", group1, "vs", group2, ":", sig_CTLA4_vs_PD1))
+print(paste("Number of significant genes (p < 0.05) for", group1, "vs", group3, ":", sig_CTLA4_vs_BRAFi))
+print(paste("Number of significant genes (p < 0.05) for", group2, "vs", group3, ":", sig_PD1_vs_BRAFi))
+
+# Order results by adjusted p-value
+
+
+
+
+# Print the first 10 rows of the ordered results
+print("First 10 rows of the differential expression results:")
+print(head(resOrdered, 10))
+
+
+# 10. Identify signature genes for each group
+print("--- Identifying signature genes for each group ---")
+
+num_signature_genes <- 50 # Number of signature genes to select per group
+
+# Function to get top genes for a given comparison
+get_top_genes <- function(res, n = num_signature_genes) {
+    res_sig <- res[order(res$pvalue), ]
+    head(rownames(res_sig), n)
+}
+
+# Get top genes for each comparison
+top_CTLA4_vs_PD1 <- get_top_genes(res_CTLA4_vs_PD1)
+top_CTLA4_vs_BRAFi <- get_top_genes(res_CTLA4_vs_BRAFi)
+top_PD1_vs_BRAFi <- get_top_genes(res_PD1_vs_BRAFi)
+
+# Combine the top genes into a single list and remove duplicates
+signature_genes <- unique(c(top_CTLA4_vs_PD1, top_CTLA4_vs_BRAFi, top_PD1_vs_BRAFi))
+
+# 11. Prepare data for heatmap
+print("--- Preparing data for heatmap ---")
+
+# Extract the expression data for the signature genes
+heatmap_data <- rnaseq_aligned[signature_genes, ]
+
+# Scale the data by row (gene)
+heatmap_data <- t(scale(t(heatmap_data)))
+
+# Remove genes/samples with NA values
+heatmap_data <- heatmap_data[complete.cases(heatmap_data), complete.cases(t(heatmap_data))]
+
+# 12. Generate Heatmap
+print("--- Generating heatmap ---")
+
+# Set color option
+hmcols <- colorRampPalette(brewer.pal(11, "RdBu"))(256)
+
+# Order columns by groups
+column_order <- order(rna_meta_aligned$groups)
+
+
+
+#Define colors for the heatmap annotation
+anno_colors <- list(
+    groups = c("anti-CTLA4 resistant" = "#8DD3C7",
+               "anti-PD1 resistant" = "#FFFFB3",
+               "anti-PD1 resistant" = "#FFFFB3", 
+               "mucosal" = "#A6CEE3",
+               "anti-PD1 resistant, BRAFi day7" = "#BEBADA")
+)
+
+
+
+
+
+
+
+
+
+# Define annotation for the heatmap
+ha <- HeatmapAnnotation(
+
+  groups = rna_meta_aligned$groups,
+
+  col = list(groups = anno_colors$groups)
+)
+
+# Create the heatmap
+Heatmap(heatmap_data, 
+        name = "Z-score", # Title of the heatmap
+        col = hmcols, # Colors for the heatmap
+        top_annotation = ha, # Add the top annotation
+        show_row_names = FALSE, # Hide row names
+        show_column_names = FALSE, # Hide column names
+        cluster_rows = TRUE, # Cluster rows
+        cluster_columns = FALSE, # Do not cluster columns
+        column_order = column_order) # Order columns by group
+
+# Save the heatmap to a file
+jpeg("heatmap_signature_genes.jpg", width = 10, height = 8, units = "in", res = 300)
+Heatmap(heatmap_data, 
+       name = "Z-score", # Title of the heatmap
+        col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")), # Colors for the heatmap
+        top_annotation = ha, # Add the top annotation
+        show_row_names = FALSE, # Hide row names
+        show_column_names = FALSE, # Hide column names
+        cluster_rows = TRUE, # Cluster rows
+        cluster_columns = FALSE, # Do not cluster columns
+        column_order = column_order) # Order columns by group
+dev.off()
+
+# --- Additional diagnostic checks ---
+
+# 1. Check the distribution of p-values
+hist(res$pvalue, main = "Distribution of p-values", xlab = "P-value")
+
+# 2. Check the size factors
+print("Size factors:")
+print(sizeFactors(dds))
+
+# 3. Check the dispersion estimates
+
+print("Dispersion estimates:")
+print(dispersions(dds))
+
+# 4. Check the contrast
+print("The contrast used:")
+print(resultsNames(dds))
