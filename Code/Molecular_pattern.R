@@ -1,10 +1,4 @@
 # A dataset from the pubulication of <<Molecular patterns of resistance to immune checkpoint blockade in melanoma>>
-library(ComplexHeatmap)
-library(circlize) # For colorRamp2
-library(dplyr) # For data manipulation
-library(clusterProfiler) # For GO enrichment analysis
-library(DESeq2) # For differential expression analysis
-
 # --- Part 1: Alteration Data and OncoPrint Generation ---
 
 # 1.1 Load and Prepare Alteration Data
@@ -461,3 +455,209 @@ print(dispersions(dds))
 # 4. Check the contrast
 print("The contrast used:")
 print(resultsNames(dds))
+
+
+
+# 13. Perform GO term enrichment analysis
+print("--- Performing GO term enrichment analysis ---")
+
+# Install and load necessary packages
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("clusterProfiler")
+#BiocManager::install("org.Hs.eg.db")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Function to perform GO enrichment analysis
+perform_go_enrichment <- function(gene_list, ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05) {
+  ego <- enrichGO(gene          = gene_list,
+                  OrgDb         = org.Hs.eg.db,
+                  keyType       = "SYMBOL",
+                  ont           = ont,
+                  pAdjustMethod = pAdjustMethod,
+                  pvalueCutoff  = pvalueCutoff,
+                  qvalueCutoff  = qvalueCutoff,
+                  readable      = TRUE)
+  return(ego)
+}
+
+# Perform GO enrichment analysis for each signature
+ego_CTLA4_vs_PD1 <- perform_go_enrichment(top_CTLA4_vs_PD1)
+ego_CTLA4_vs_BRAFi <- perform_go_enrichment(top_CTLA4_vs_BRAFi)
+ego_PD1_vs_BRAFi  <- perform_go_enrichment(top_PD1_vs_BRAFi)
+
+# Print results for each signature
+print("GO enrichment results for CTLA4_vs_PD1:")
+print(head(summary(ego_CTLA4_vs_PD1), 10))
+
+print("GO enrichment results for CTLA4_vs_BRAFi:")
+print(head(summary(ego_CTLA4_vs_BRAFi), 10))
+
+print("GO enrichment results for PD1_vs_BRAFi:")
+print(head(summary(ego_PD1_vs_BRAFi), 10))
+
+# You can visualize the results using dotplot
+dotplot(ego_CTLA4_vs_PD1, showCategory=10)
+dotplot(ego_CTLA4_vs_BRAFi, showCategory=10)
+dotplot(ego_PD1_vs_BRAFi, showCategory=10)
+
+
+# --- Part 3: Single Cell Data Analysis ---
+
+print("--- Starting Part 3: Single Cell Analysis Workflow ---")
+
+# 3.1 Load Single-Cell Data
+print("--- 3.1: Loading single-cell data ---")
+# Load the raw count matrix. The first column contains gene symbols, so we set it as row names.
+sc_counts <- read.table("./Data/molecular_pattern/GSE244983_RawCounts_scRNAseq.txt",
+                        header = TRUE,
+                        row.names = 1,
+                        sep = '\t',
+                        check.names = FALSE)
+
+sc_annotation <- read.table("./Data/molecular_pattern/GSE244983_SingleCellAnnotations.txt",
+                        header = TRUE,
+                        sep = '\t',
+                        stringsAsFactors = FALSE)
+
+# 3.1.1 Explore Raw Cell Annotations
+print("--- 3.1.1: Exploring the raw sc_annotation file ---")
+
+# Display the structure and first few rows of the annotation data
+print("Structure of the sc_annotation data frame:")
+str(sc_annotation)
+
+print("First 6 rows of sc_annotation:")
+print(head(sc_annotation))
+
+# Summarize each column in the annotation data
+print("Summary of each column in sc_annotation:")
+for (col_name in colnames(sc_annotation)) {
+    column_data <- sc_annotation[[col_name]]
+    
+    # Treat all columns as categorical unless they have too many unique values (e.g., cell names)
+    if (length(unique(column_data)) > 50) {
+        print(paste0("--- Skipping '", col_name, "' (high-cardinality with >50 unique values) ---"))
+    } else {
+        print(paste0("--- Value counts for '", col_name, "' (categorical) ---"))
+        print(table(column_data, useNA = "ifany"))
+    }
+}
+
+# 3.1.2 Prepare and Align Metadata
+print("--- 3.1.2: Preparing and aligning cell metadata ---")
+
+# The annotation data should contain the cell barcodes. Let's assume the column is named 'NAME'.
+if (!"NAME" %in% colnames(sc_annotation)) {
+    stop("The 'sc_annotation' data frame must contain a 'NAME' column with cell barcodes.")
+}
+
+# Set the row names of the annotation data to be the cell barcodes.
+cell_metadata <- sc_annotation %>%
+    tibble::column_to_rownames("NAME")
+
+# Find the common cells that exist in both the count matrix and the metadata.
+common_cells <- intersect(colnames(sc_counts), rownames(cell_metadata))
+
+if (length(common_cells) == 0) {
+    stop("No common cells found between count matrix and annotation file. Check barcode formats.")
+}
+
+# Align both the count matrix and the metadata to this common set of cells.
+sc_counts_aligned <- sc_counts[, common_cells]
+cell_metadata_aligned <- cell_metadata[common_cells, ]
+
+sce <- SingleCellExperiment(
+    assays = list(counts = as.matrix(sc_counts_aligned)),
+    colData = cell_metadata_aligned
+)
+
+print(paste("Loaded single-cell data with", ncol(sce), "cells and", nrow(sce), "genes."))
+
+# 3.2 Normalization
+print("--- 3.2: Normalizing single-cell data ---")
+# As the data is pre-QC'd, we proceed to normalization.
+# We use deconvolution-based size factors for more accurate normalization across cell types.
+set.seed(111) # for reproducibility
+clusters <- quickCluster(sce)
+sce <- computeSumFactors(sce, clusters = clusters)
+sce <- logNormCounts(sce)
+
+print("Normalization complete.")
+
+# 3.3 Feature Selection
+print("--- 3.3: Selecting highly variable genes (HVGs) ---")
+# Model gene variance to identify genes that drive biological heterogeneity.
+dec <- modelGeneVar(sce)
+
+# Select the top 2000 most variable genes for downstream analysis.
+top_hvgs <- getTopHVGs(dec, n = 2000)
+
+# Visualize the mean-variance trend
+png("./Images/sc_mean_variance_plot.png", width = 6, height = 5, units = "in", res = 300)
+plot(dec$mean, dec$total, xlab = "Mean log-expression", ylab = "Variance",
+     main = "Mean-Variance Trend")
+points(dec[top_hvgs, "mean"], dec[top_hvgs, "total"], col = "red")
+curve(metadata(dec)$trend(x), col = "dodgerblue", add = TRUE)
+dev.off()
+
+print(paste("Identified", length(top_hvgs), "highly variable genes."))
+
+# 3.4 Dimensionality Reduction
+print("--- 3.4: Performing dimensionality reduction (PCA, UMAP) ---")
+# Perform PCA on the HVGs to capture the main axes of variation.
+set.seed(1234)
+sce <- runPCA(sce, subset_row = top_hvgs)
+
+# Run UMAP for visualization, using the first 20 principal components.
+sce <- runUMAP(sce, dimred = "PCA", n_dimred = 20)
+
+# 3.5 Clustering and Visualization
+print("--- 3.5: Clustering cells and visualizing results ---")
+# Perform graph-based clustering on the PCA results.
+g <- buildSNNGraph(sce, k = 10, use.dimred = "PCA")
+clusters_louvain <- igraph::cluster_louvain(g)
+colLabels(sce) <- factor(clusters_louvain$membership)
+
+# Visualize clusters on the UMAP plot, colored by the original study's cell types.
+p_umap <- plotReducedDim(sce, "UMAP", colour_by = "cell.types", text_by = "cell.types",
+                         text_size = 4, point_size = 0.5) +
+    guides(color = "none", text = "none") + # Hide legends for clarity
+    ggtitle("UMAP of Single Cells by Original Annotation")
+
+ggsave("./Images/melanoma_umap_by_celltype.png", plot = p_umap, width = 10, height = 8)
+
+print("UMAP plot saved to ./Images/melanoma_umap_by_celltype.png")
+
+# 3.6 Find Marker Genes
+print("--- 3.6: Finding marker genes for each cell type ---")
+# Use a Wilcoxon rank-sum test to find genes upregulated in each cluster vs. others.
+markers <- findMarkers(sce, groups = colData(sce)$cell.types, test.type = "wilcox", direction = "up")
+
+# Extract top 10 markers for each cell type for visualization.
+top_markers <- lapply(markers, function(x) {
+    # Filter for significant markers and take the top 10
+    x_df <- as.data.frame(x)
+    sig_markers <- rownames(x_df[x_df$FDR < 0.05, ])
+    head(sig_markers, 10)
+})
+
+# 3.7 Marker Gene Heatmap
+print("--- 3.7: Generating marker gene heatmap ---")
+# Generate a heatmap of the top marker genes.
+p_heatmap <- plotHeatmap(sce,
+            features = unique(unlist(top_markers)),
+            columns = order(colData(sce)$cell.types),
+            colour_columns_by = c("cell.types"),
+            cluster_cols = FALSE,
+            cluster_rows = TRUE,
+            show_colnames = FALSE,
+            main = "Top 10 Marker Genes per Cell Type")
+
+jpeg("./Images/melanoma_marker_heatmap.jpg", width = 10, height = 12, units = "in", res = 300)
+draw(p_heatmap)
+dev.off()
+
+print("Marker gene heatmap saved to ./Images/melanoma_marker_heatmap.jpg")
+print("--- Part 3: Single-cell analysis complete. ---")
