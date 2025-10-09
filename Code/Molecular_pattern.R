@@ -527,6 +527,7 @@ print("--- 3.1.1: Exploring the raw sc_annotation file ---")
 # Display the structure and first few rows of the annotation data
 print("Structure of the sc_annotation data frame:")
 str(sc_annotation)
+colnames(sc_annotation)[1] <- "CellBarcode" # Rename the first column for clarity
 
 print("First 6 rows of sc_annotation:")
 print(head(sc_annotation))
@@ -548,14 +549,14 @@ for (col_name in colnames(sc_annotation)) {
 # 3.1.2 Prepare and Align Metadata
 print("--- 3.1.2: Preparing and aligning cell metadata ---")
 
-# The annotation data should contain the cell barcodes. Let's assume the column is named 'NAME'.
-if (!"NAME" %in% colnames(sc_annotation)) {
+# The annotation data should contain the cell barcodes.
+if (!"CellBarcode" %in% colnames(sc_annotation)) {
     stop("The 'sc_annotation' data frame must contain a 'NAME' column with cell barcodes.")
 }
 
 # Set the row names of the annotation data to be the cell barcodes.
 cell_metadata <- sc_annotation %>%
-    tibble::column_to_rownames("NAME")
+    tibble::column_to_rownames("CellBarcode")
 
 # Find the common cells that exist in both the count matrix and the metadata.
 common_cells <- intersect(colnames(sc_counts), rownames(cell_metadata))
@@ -621,9 +622,9 @@ clusters_louvain <- igraph::cluster_louvain(g)
 colLabels(sce) <- factor(clusters_louvain$membership)
 
 # Visualize clusters on the UMAP plot, colored by the original study's cell types.
-p_umap <- plotReducedDim(sce, "UMAP", colour_by = "cell.types", text_by = "cell.types",
+p_umap <- plotReducedDim(sce, "UMAP", colour_by = "Sample", text_by = "label",
                          text_size = 4, point_size = 0.5) +
-    guides(color = "none", text = "none") + # Hide legends for clarity
+    guides(text = "none") + # Hide legends for clarity
     ggtitle("UMAP of Single Cells by Original Annotation")
 
 ggsave("./Images/melanoma_umap_by_celltype.png", plot = p_umap, width = 10, height = 8)
@@ -633,7 +634,7 @@ print("UMAP plot saved to ./Images/melanoma_umap_by_celltype.png")
 # 3.6 Find Marker Genes
 print("--- 3.6: Finding marker genes for each cell type ---")
 # Use a Wilcoxon rank-sum test to find genes upregulated in each cluster vs. others.
-markers <- findMarkers(sce, groups = colData(sce)$cell.types, test.type = "wilcox", direction = "up")
+markers <- findMarkers(sce, groups = colData(sce)$label, test.type = "wilcox", direction = "up")
 
 # Extract top 10 markers for each cell type for visualization.
 top_markers <- lapply(markers, function(x) {
@@ -648,16 +649,101 @@ print("--- 3.7: Generating marker gene heatmap ---")
 # Generate a heatmap of the top marker genes.
 p_heatmap <- plotHeatmap(sce,
             features = unique(unlist(top_markers)),
-            columns = order(colData(sce)$cell.types),
-            colour_columns_by = c("cell.types"),
+            columns = order(colData(sce)$label),
+            colour_columns_by = c("label"),
             cluster_cols = FALSE,
             cluster_rows = TRUE,
             show_colnames = FALSE,
             main = "Top 10 Marker Genes per Cell Type")
 
+# Ensure the output directory exists before saving the plot
+if (!dir.exists("./Images")) {
+    dir.create("./Images")
+}
+
 jpeg("./Images/melanoma_marker_heatmap.jpg", width = 10, height = 12, units = "in", res = 300)
-draw(p_heatmap)
+p_heatmap
 dev.off()
 
 print("Marker gene heatmap saved to ./Images/melanoma_marker_heatmap.jpg")
 print("--- Part 3: Single-cell analysis complete. ---")
+
+# 3.8 Annotate Clusters Based on Marker Genes
+print("--- 3.8: Annotating clusters based on marker genes ---")
+
+# Display the top 5 markers for each cluster to aid in manual annotation
+print("Top 5 markers for each cluster:")
+for (cluster_name in names(top_markers)) {
+    print(paste("Cluster", cluster_name, ":", paste(head(top_markers[[cluster_name]], 10), collapse = ", ")))
+}
+
+# Based on the markers above and known biology, create a mapping.
+# This is a manual step. You will need to replace "Unknown" with the correct cell type.
+# Example canonical markers:
+# T-cells: CD3D, CD8A, CD4
+# B-cells: MS4A1, CD19
+# Myeloid: LYZ, CD68, CD14
+# Melanoma: MLANA, PMEL
+cluster_annotations <- c(
+    "1" = "T-cells",
+    "2" = "Melanoma",
+    "3" = "Myeloid",
+    "4" = "B-cells",
+    "5" = "T-cells",
+    "6" = "Unknown",
+    "7" = "Unknown",
+    "8" = "Unknown",
+    "9" = "Unknown",
+    "10" = "Unknown"
+    # ... continue for all your clusters
+)
+
+# Add the new annotations to the colData of the sce object
+sce$manual_annotation <- cluster_annotations[colLabels(sce)]
+
+# Visualize the new manual annotations on the UMAP
+p_umap_manual <- plotReducedDim(sce, "UMAP", colour_by = "manual_annotation", text_by = "manual_annotation",
+                                text_size = 4, point_size = 0.5) +
+    guides(text = "none") +
+    ggtitle("UMAP of Single Cells by Manual Annotation")
+
+ggsave("./Images/melanoma_umap_by_manual_annotation.png", plot = p_umap_manual, width = 10, height = 8)
+
+print("UMAP plot with manual annotations saved to ./Images/melanoma_umap_by_manual_annotation.png")
+print("Review the top markers and update the 'cluster_annotations' mapping in the script.")
+
+# 3.9 Automated Cluster Annotation with SingleR
+print("--- 3.9: Performing automated cluster annotation with SingleR ---")
+
+# Load the Human Primary Cell Atlas data as a reference
+# This might take a moment to download the first time you run it.
+hpca.ref <- HumanPrimaryCellAtlasData()
+
+# Perform the annotation. SingleR will compare each cell in your dataset
+# to the reference and assign the most likely cell type.
+predictions <- SingleR(test = sce, ref = hpca.ref, labels = hpca.ref$label.main)
+
+# Add the predicted labels to your SingleCellExperiment object
+sce$singler_annotation <- predictions$labels
+
+# To see how the automated labels correspond to your unsupervised clusters,
+# you can create a summary table.
+print("Cross-tabulation of automated labels vs. unsupervised clusters:")
+print(table(Predicted = sce$singler_annotation, Cluster = colLabels(sce)))
+
+# Visualize the new automated annotations on the UMAP plot
+p_umap_singler <- plotReducedDim(sce, "UMAP", colour_by = "singler_annotation", text_by = "singler_annotation",
+                                 text_size = 4, point_size = 0.5) +
+    guides(text = "none") +
+    ggtitle("UMAP of Single Cells by SingleR Automated Annotation")
+
+ggsave("./Images/melanoma_umap_by_singler_annotation.png", plot = p_umap_singler, width = 10, height = 8)
+
+print("UMAP plot with SingleR annotations saved to ./Images/melanoma_umap_by_singler_annotation.png")
+
+# You can also view the diagnostic plot to see the annotation scores
+png("./Images/singler_diagnostic_plot.png", width = 10, height = 6, units = "in", res = 300)
+plotScoreHeatmap(predictions)
+dev.off()
+
+print("SingleR diagnostic heatmap saved to ./Images/singler_diagnostic_plot.png")
