@@ -729,6 +729,28 @@ sce$singler_annotation <- predictions$labels
 # To see how the automated labels correspond to your unsupervised clusters,
 # you can create a summary table.
 print("Cross-tabulation of automated labels vs. unsupervised clusters:")
+
+# Determine the most frequent cell type for each cluster
+cluster_annotations_automatic <- table(Predicted = sce$singler_annotation, Cluster = colLabels(sce))
+
+cluster_ids <- colnames(cluster_annotations_automatic)
+cluster_annotations <- apply(cluster_annotations_automatic, 2, function(x) {
+  names(x)[which.max(x)]
+})
+
+print("Cluster annotation results:")
+print(cluster_annotations)
+
+# Assign the automatic annotations to the SingleCellExperiment object
+sce$automatic_cluster_annotation <- cluster_annotations[colLabels(sce)]
+
+# Visualize the new automated cluster annotations on the UMAP plot
+p_umap_automatic <- plotReducedDim(sce, "UMAP", colour_by = "automatic_cluster_annotation", text_by = "automatic_cluster_annotation",
+                                text_size = 4, point_size = 0.5) +
+    guides(text = "none") +
+    ggtitle("UMAP of Single Cells by Automatic Cluster Annotation")
+
+ggsave("./Images/melanoma_umap_by_automatic_cluster_annotation.png", plot = p_umap_automatic, width = 10, height = 8)
 print(table(Predicted = sce$singler_annotation, Cluster = colLabels(sce)))
 
 # Visualize the new automated annotations on the UMAP plot
