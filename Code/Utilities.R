@@ -37,6 +37,6 @@ bioc_packages <- c("SingleCellExperiment", "scuttle", "scran", "scater", "rtrack
                    "PCAtools", "celldex", "SingleR", "TENxPBMCData", "depmap", "ComplexHeatmap")
 cran_packages <- c("uwot", "dynamicTreeCut", "dplyr", "pheatmap", "Seurat", "ggplot2", 
                    "gridExtra", "RColorBrewer", "tidyr", "tibble", "magrittr", "ggrepel",
-                   "circlize", "grid", "readxl")
+                   "circlize", "grid", "readxl", "corrplot")
 
 install_and_load_packages(bioc_pkgs = bioc_packages, cran_pkgs = cran_packages)

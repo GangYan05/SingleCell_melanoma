@@ -340,3 +340,16 @@ if ("CLUSTER" %in% colnames(colData(sce_filtered))) {
 } else {
     message("Column 'CLUSTER' not found in colData. Skipping sub-clustering analysis.")
 }
+
+
+
+# Load the data and capture the variable names
+load("./Data/scData/post.treatment.subsample.de.RData")
+load("./Data/scData/post.treatment.de.RData")
+load("./Data/scData/post.treatment.sig.RData")
+# Print the names of the variables that were loaded
+
+head(trt.subsmp)
+head(trt.sig)
+head(trt.de)
+"C20orf112" %in% trt.sig$trt.up

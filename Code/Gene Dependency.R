@@ -1,343 +1,235 @@
-# Gene Dependency 
+# Gene Dependency Analysis Script
 library(dplyr)
 library(tibble)
 library(pheatmap)
 library(RColorBrewer)
 library(tidyr)
 library(ggplot2)
+library(circlize)
 
-# --- Part 1: Analysis using local CSV files ---
+# =============================================================================
+# Module 1: Data Loading and Preprocessing
+# =============================================================================
 
-# Load the DepMap data from local CSV files
-# depmap_data: CRISPR gene effect scores. Rows are cell lines (ModelID), columns are genes.
-depmap_data <- read.csv("./Data/depmap/CRISPRGeneEffect_25Q2.csv", row.names=1, check.names=FALSE, stringsAsFactors=FALSE)
-# depmap_meta: Metadata for cell lines. Rows are cell lines (ModelID).
-depmap_meta <- read.csv("./Data/depmap/Model.csv", row.names=1, check.names=FALSE, stringsAsFactors=FALSE)
-essential_list <- read.csv("./Data/depmap/common_essentials.csv", stringsAsFactors=FALSE, header = TRUE)
-
-message("--- Classifying DepMap data by OncotreeLineage---")
-
-# 1. Find common cell lines that exist in both the data and metadata files.
-common_cell_lines <- intersect(rownames(depmap_data), rownames(depmap_meta))
-message(sprintf("Found %d common cell lines between dependency data and metadata.", length(common_cell_lines)))
-
-# 2. Filter both dataframes to keep only these common cell lines for consistency.
-depmap_data_common <- depmap_data[common_cell_lines, ]
-depmap_meta_common <- depmap_meta[common_cell_lines, ]
-
-# 3. Merge the disease type information into the gene dependency data.
-depmap_data_annotated <- depmap_data_common %>%
-  rownames_to_column("ModelID") %>%
-  left_join(
-    depmap_meta_common %>% 
-      select(OncotreeLineage) %>%
-      rownames_to_column("ModelID"),
-    by = "ModelID"
-  ) %>%
-  # Move the disease column to the front for clarity
-  select(ModelID, OncotreeLineage, everything())
-depmap_data_annotated[1:5, 1:5]
-
-# --- Part 1b: Subset for Essential Genes ---
-message("\n--- Subsetting data for common essential genes ---")
-
-# 1. Get the list of essential genes from the loaded file.
-essential_genes <- essential_list$gene
-
-# 2. Find which of these essential genes are present as columns in our data.
-common_essential_genes <- intersect(essential_genes, colnames(depmap_data_annotated))
-message(sprintf("Found %d common essential genes in the dependency data.", length(common_essential_genes)))
-
-# 3. Create a new dataframe containing only the essential gene columns, plus identifiers.
-depmap_essential_annotated <- depmap_data_annotated %>%
-  select(ModelID, OncotreeLineage, all_of(common_essential_genes))
-
-message("Created 'depmap_essential_annotated' with essential genes only.")
-print(head(depmap_essential_annotated[, 1:6]))
-
-# --- Part 1c: Calculate Average Essentiality by Lineage ---
-message("\n--- Calculating average essentiality score for each gene by lineage ---")
-
-# Group by lineage and calculate the mean score for each essential gene.
-# A more negative score indicates higher essentiality.
-lineage_essentiality_scores <- depmap_essential_annotated %>%
-  group_by(OncotreeLineage) %>%
-  summarise(across(all_of(common_essential_genes), ~mean(.x, na.rm = TRUE)))
-
-message("Created 'lineage_essentiality_scores' with average gene scores per lineage.")
-print(lineage_essentiality_scores[, 1:6])
-
-# --- Part 1d: Visualize Essentiality Scores with a Heatmap ---
-message("\n--- Generating heatmap of lineage essentiality scores ---")
-
-# Create an 'Images' directory if it doesn't exist, similar to other scripts
-if (!dir.exists("./Images")) {
-  dir.create("./Images")
+load_and_annotate_depmap <- function(crispr_path, model_path, essential_path) {
+  message("Loading and annotating DepMap data...")
+  
+  # 1. Load Files
+  crispr_data <- read.csv(crispr_path, row.names = 1, check.names = FALSE, stringsAsFactors = FALSE)
+  depmap_meta <- read.csv(model_path, row.names = 1, check.names = FALSE, stringsAsFactors = FALSE)
+  essential_list <- read.csv(essential_path, stringsAsFactors = FALSE, header = TRUE)
+  
+  # 2. Gene Name Cleanup (Remove " (ID)")
+  colnames(crispr_data) <- gsub(" \\(.*\\)", "", colnames(crispr_data))
+  essential_clean <- gsub(" \\(.*\\)", "", essential_list$gene)
+  
+  # 3. Align and Merge metadata
+  common_cell_lines <- intersect(rownames(crispr_data), rownames(depmap_meta))
+  message(sprintf("Found %d common cell lines.", length(common_cell_lines)))
+  
+  depmap_annotated <- crispr_data[common_cell_lines, ] %>%
+    rownames_to_column("ModelID") %>%
+    left_join(
+      depmap_meta[common_cell_lines, ] %>%
+        select(OncotreeLineage, OncotreeSubtype) %>%
+        rownames_to_column("ModelID"),
+      by = "ModelID"
+    ) %>%
+    select(ModelID, OncotreeLineage, OncotreeSubtype, everything())
+  
+  list(
+    data = depmap_annotated,
+    essential_genes = essential_clean
+  )
 }
 
-# Prepare the data for pheatmap. It needs to be a numeric matrix with lineages as rownames.
-# It's also good practice to filter out lineages with very few cell lines (<5), as their
-# averages can be noisy.
-lineage_counts <- count(depmap_data_annotated, OncotreeLineage)
-lineages_to_keep <- lineage_counts$OncotreeLineage[lineage_counts$n >= 5]
+# =============================================================================
+# Module 2: Essential Genes Analysis
+# =============================================================================
 
-heatmap_matrix <- lineage_essentiality_scores %>%
-  filter(OncotreeLineage %in% lineages_to_keep) %>%
-  tibble::column_to_rownames("OncotreeLineage") %>%
-  as.matrix()
-
-# Generate the heatmap. A lower score (more negative) means more essential.
-# We'll use a color scale where blue represents low scores (high essentiality).
-pheatmap(
-  heatmap_matrix,
-  main = "Average Essentiality of Common Essential Genes Across Cancer Lineages",
-  fontsize_row = 8,
-  show_colnames = FALSE, # Too many genes to display cleanly
-  cluster_cols = TRUE,   # Cluster genes by their essentiality profiles
-  cluster_rows = TRUE,   # Cluster lineages by their dependency profiles
-  scale = "none",        # The scores are already on a comparable scale
-  color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
-  filename = "./Images/lineage_essentiality_heatmap.png", # Save to file
-  width = 10,
-  height = 8
-)
-
-message("Heatmap saved to ./Images/lineage_essentiality_heatmap.png")
-
-# --- Part 1e: Find Lineage-Specific Essential Genes (Example: Melanoma) ---
-message("\n--- Finding top 5 genes specifically essential to Melanoma ---")
-
-# To find specific dependencies, we calculate a "specificity score":
-# specificity_score = (Gene Score in Melanoma) - (Mean Gene Score in Other Lineages)
-# A more negative score indicates higher specific essentiality in Melanoma.
-
-melanoma_specificity <- lineage_essentiality_scores %>%
-  # Use only lineages with enough cell lines for a fair comparison (from heatmap)
-  filter(OncotreeLineage %in% lineages_to_keep) %>%
-  # Convert to long format for easier manipulation
-  pivot_longer(cols = -OncotreeLineage, names_to = "gene", values_to = "score") %>%
-  # Group by gene to compare Melanoma vs. Others
-  group_by(gene) %>%
-  # Calculate the score in Melanoma and the mean score in all other lineages
-  summarise(
-    melanoma_score = score[OncotreeLineage == "Skin"],
-    other_lineages_mean_score = mean(score[OncotreeLineage != "Skin"], na.rm = TRUE)
-  ) %>%
-  mutate(specificity_score = melanoma_score - other_lineages_mean_score) %>%
-  filter(!is.na(specificity_score)) %>%
-  arrange(specificity_score)
-
-top_melanoma_specific_genes <- head(melanoma_specificity, 50)
-print(top_melanoma_specific_genes, n = 50)
-top_melanoma_specific_genes$gene
-
-# strip the gene names for easier reading
-top_melanoma_specific_genes$gene <- gsub("^(.*) \\(.*\\)$", "\\1", top_melanoma_specific_genes$gene)
-# export the gene names to a text file
-write.table(top_melanoma_specific_genes$gene, file = "./Results/melanoma_specific_genes.txt", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-top_melanoma_specific_genes$gene
-
-# --- Part 1f: Visualize Specificity Scores for Top 5 Genes ---
-message("\n--- Visualizing specificity of top 5 Skin-lineage genes ---")
-
-# A grouped bar plot is ideal for comparing the dependency scores directly.
-
-# 1. Take the top 5 genes from the previously calculated table.
-# The gene names in `top_melanoma_specific_genes` have already been cleaned.
-top_5_for_plot <- head(top_melanoma_specific_genes, 5)
-
-# 2. Reshape the data from a wide to a long format, which is required for ggplot.
-plot_data <- top_5_for_plot %>%
-  select(gene, melanoma_score, other_lineages_mean_score) %>%
-  pivot_longer(
-    cols = c("melanoma_score", "other_lineages_mean_score"),
-    names_to = "lineage_group",
-    values_to = "mean_score"
-  ) %>%
-  # Make the gene names an ordered factor to preserve the ranking in the plot
-  mutate(
-    gene = factor(gene, levels = top_5_for_plot$gene),
-    lineage_group = recode(lineage_group,
-                           "melanoma_score" = "Skin Lineage",
-                           "other_lineages_mean_score" = "Other Lineages (Mean)")
-  )
-
-# 3. Create the grouped bar plot.
-specificity_plot <- ggplot(plot_data, aes(x = gene, y = mean_score, fill = lineage_group)) +
-  geom_col(position = position_dodge(width = 0.9), alpha = 0.8) +
-  labs(
-    title = "Top 5 Most Specifically Essential Genes in Skin Lineage",
-    subtitle = "Comparison of mean dependency score in Skin vs. other lineages",
-    x = "Gene",
-    y = "Mean Dependency Score (CERES)",
-    fill = "Lineage Group"
-  ) +
-  theme_classic(base_size = 12) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top") +
-  scale_fill_manual(values = c("Skin Lineage" = "#d95f02", "Other Lineages (Mean)" = "#7570b3"))
-
-# 4. Save the plot and print it to the viewer.
-ggsave("./Images/top5_skin_specific_genes_barplot.png", plot = specificity_plot, width = 8, height = 6)
-message("Specificity bar plot saved to ./Images/top5_skin_specific_genes_barplot.png")
-print(specificity_plot)
-
-
-# --- Part 1g: Statistical Test and Distribution Visualization ---
-message("\n--- Visualizing score distributions with statistical significance ---")
-
-# 1. Get the original names of the top 5 specific genes (before cleaning).
-top_5_original_names <- head(melanoma_specificity, 5)$gene
-
-# 2. Prepare data for plotting and testing from the full cell line data.
-distribution_plot_data <- depmap_essential_annotated %>%
-  select(OncotreeLineage, all_of(top_5_original_names)) %>%
-  mutate(lineage_group = ifelse(OncotreeLineage == "Skin", "Skin", "Non-Skin")) %>%
-  pivot_longer(
-    cols = all_of(top_5_original_names),
-    names_to = "gene",
-    values_to = "dependency_score"
-  ) %>%
-  mutate(gene = gsub(" \\(.*\\)$", "", gene))
-
-# 3. Ensure the gene order in the plot matches the specificity ranking.
-distribution_plot_data$gene <- factor(distribution_plot_data$gene, levels = top_5_for_plot$gene)
-
-# 4. Perform Wilcoxon test for each gene and prepare annotations.
-statistical_results <- distribution_plot_data %>%
-  group_by(gene) %>%
-  summarise(
-    p_value = wilcox.test(
-      dependency_score[lineage_group == "Skin"],
-      dependency_score[lineage_group == "Non-Skin"]
-    )$p.value,
-    y_pos = max(dependency_score, na.rm = TRUE) + 0.1 # Position for label
-  ) %>%
-  ungroup() %>%
-  mutate(
-    p_adj = p.adjust(p_value, method = "BH"),
-    p_label = scales::pvalue(p_adj, accuracy = 0.001, add_p = TRUE)
-  )
-
-message("Wilcoxon test results for top 5 skin-specific genes:")
-print(statistical_results %>% select(gene, p_value, p_adj))
-
-# 5. Create the violin plot with jittered points and p-value annotations.
-distribution_plot <- ggplot(distribution_plot_data, aes(x = lineage_group, y = dependency_score, fill = lineage_group)) +
-  geom_violin(trim = FALSE, alpha = 0.6) +
-  geom_jitter(height = 0, width = 0.2, size = 0.5, alpha = 0.3) +
-  geom_text(
-    data = statistical_results,
-    aes(x = 1.5, y = y_pos, label = p_label),
-    inherit.aes = FALSE,
-    size = 3.5
-  ) +
-  facet_wrap(~gene, scales = "free_y", nrow = 1) +
-  labs(
-    title = "Dependency Score Distribution of Top 5 Skin-Specific Genes",
-    subtitle = "Comparison between Skin and Non-Skin cell lineages (adjusted p-values from Wilcoxon test)",
-    x = "Lineage Group",
-    y = "Dependency Score (CERES)"
-  ) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = "none", strip.text = element_text(face = "bold")) +
-  scale_fill_manual(values = c("Skin" = "#d95f02", "Non-Skin" = "#7570b3"))
-
-# 6. Save the plot and print it.
-ggsave("./Images/top5_skin_specific_genes_distribution_with_pvals.png", plot = distribution_plot, width = 12, height = 5)
-message("Distribution plot with p-values saved to ./Images/top5_skin_specific_genes_distribution_with_pvals.png")
-print(distribution_plot)
-
-# --- Part 1i: Calculate Essential Gene Correlation within Skin Lineage ---
-message("\n--- Calculating correlation of essential genes within Skin lineage ---")
-
-# 1. Filter the data to include only Skin lineage cell lines.
-skin_essential_data <- depmap_essential_annotated %>%
-  filter(OncotreeLineage == "Skin")
-
-message(sprintf("Found %d Skin lineage cell lines for correlation analysis.", nrow(skin_essential_data)))
-
-# 2. Prepare a numeric matrix for the correlation function.
-# We select only the gene columns.
-skin_essential_matrix <- skin_essential_data %>%
-  select(-ModelID, -OncotreeLineage) %>%
-  as.matrix()
-
-# 3. Calculate the pairwise correlation matrix between all genes (columns).
-# 'pairwise.complete.obs' handles any missing values.
-skin_gene_cor <- cor(skin_essential_matrix, use = "pairwise.complete.obs")
-
-# 4. Visualize the correlation matrix as a heatmap.
-# This helps to identify blocks of highly correlated (co-dependent) genes.
-# We save the output of pheatmap to an object to access the clustering information.
-cor_heatmap_obj <- pheatmap(
-  skin_gene_cor,
-  main = "Correlation of Essential Gene Dependencies in Skin Lineage",
-  show_rownames = FALSE, # Too many genes to show
-  show_colnames = FALSE,
-  filename = "./Images/skin_lineage_essential_gene_correlation_heatmap.png",
-  width = 8, height = 8
-)
-
-message("Correlation heatmap saved to ./Images/skin_lineage_essential_gene_correlation_heatmap.png")
-
-# --- Part 1j: Extract Gene Clusters from Correlation Heatmap ---
-message("\n--- Extracting gene clusters from the correlation heatmap ---")
-
-# The pheatmap object `cor_heatmap_obj` contains the hierarchical clustering results.
-# We can "cut" the dendrogram to define our gene clusters.
-
-# 1. Define the number of clusters you want to extract.
-# This is often decided by visually inspecting the dendrogram on the heatmap.
-# Let's choose 6 for this example. You can adjust this number.
-num_clusters <- 100
-
-# 2. Cut the column's hierarchical tree (`tree_col`) into the desired number of clusters.
-gene_clusters <- cutree(cor_heatmap_obj$tree_col, k = num_clusters)
-
-# `gene_clusters` is now a named vector where names are genes and values are cluster IDs.
-
-# 3. To see the genes in a specific cluster (e.g., cluster 1):
-cluster_1_genes <- names(gene_clusters[gene_clusters == 1])
-message(sprintf("\nFound %d genes in Cluster 1 (example):", length(cluster_1_genes)))
-print(head(cluster_1_genes))
-
-# You can also create a list containing all clusters for easy access
-all_gene_clusters <- split(names(gene_clusters), gene_clusters)
-message("\nSummary of number of genes per cluster:")
-cluster_sizes <- sapply(all_gene_clusters, length)
-print(cluster_sizes)
-
-# 4. Filter out clusters that are too small (e.g., fewer than 10 genes)
-min_cluster_size <- 10
-filtered_gene_clusters <- all_gene_clusters[cluster_sizes >= min_cluster_size]
-message(sprintf("\nKeeping %d clusters with %d or more genes for further analysis.", 
-                length(filtered_gene_clusters), min_cluster_size))
-
-# --- Part 1k: Identify the Most Tightly Correlated Cluster ---
-message("\n--- Finding the most tightly correlated gene cluster ---")
-
-# To quantify how "tight" a cluster is, we can calculate the average
-# pairwise correlation among all genes within that cluster.
-# We will now use the 'filtered_gene_clusters' list.
-
-# 1. Use sapply to iterate over each filtered cluster's gene list.
-avg_cluster_cor <- sapply(filtered_gene_clusters, function(genes_in_cluster) {
-  # Subset the main correlation matrix to only the genes in the current cluster
-  cluster_cor_matrix <- skin_gene_cor[genes_in_cluster, genes_in_cluster]
+run_essential_genes_module <- function(depmap_obj, out_img_dir) {
+  message("\n--- Running Essential Genes Module ---")
   
-  # To calculate the mean correlation, we only use the values in the upper
-  # triangle of the matrix. This avoids including the diagonal (which is always 1)
-  # and double-counting pairs (since cor(A,B) == cor(B,A)).
-  # We also handle the case of a cluster having only one gene.
-  if (length(genes_in_cluster) > 1) {
-    mean(cluster_cor_matrix[upper.tri(cluster_cor_matrix)])
+  # 1. Filter for common essential genes
+  shared_essential <- intersect(depmap_obj$essential_genes, colnames(depmap_obj$data))
+  message(sprintf("Found %d shared essential genes.", length(shared_essential)))
+  
+  if(length(shared_essential) == 0) {
+    stop("No shared essential genes found. Check column name format.")
   }
-})
+  
+  essential_data <- depmap_obj$data %>% select(ModelID, OncotreeLineage, all_of(shared_essential))
+  
+  # 2. Lineage Average
+  lineage_scores <- essential_data %>%
+    group_by(OncotreeLineage) %>%
+    summarise(across(all_of(shared_essential), ~ mean(.x, na.rm = TRUE)))
+  
+  # 3. Specificity Rank (Melanoma/Skin Specificity)
+  lineage_counts <- count(depmap_obj$data, OncotreeLineage)
+  valid_lineages <- lineage_counts$OncotreeLineage[lineage_counts$n >= 5]
+  
+  melanoma_spec <- lineage_scores %>%
+    filter(OncotreeLineage %in% valid_lineages) %>%
+    pivot_longer(cols = -OncotreeLineage, names_to = "gene", values_to = "score") %>%
+    group_by(gene) %>%
+    summarise(
+      skin_score = score[OncotreeLineage == "Skin"],
+      others_mean = mean(score[OncotreeLineage != "Skin"], na.rm = TRUE)
+    ) %>%
+    mutate(specificity = skin_score - others_mean) %>%
+    arrange(specificity)
+  
+  # Save specificity results
+  write.csv(melanoma_spec, file.path("./Data/Results/DepMap", "melanoma_essential_specificity.csv"), row.names = FALSE)
+  
+  # 4. Visualization: Heatmap
+  heatmap_mat <- lineage_scores %>%
+    filter(OncotreeLineage %in% valid_lineages) %>%
+    column_to_rownames("OncotreeLineage") %>%
+    as.matrix()
+    
+  pheatmap(
+    heatmap_mat,
+    main = "Average Essentiality of Common Essential Genes Across Lineages",
+    show_colnames = FALSE,
+    color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+    filename = file.path(out_img_dir, "lineage_essentiality_heatmap.png"),
+    width = 10, height = 8
+  )
+  
+  message("Essential Genes Heatmap saved.")
+  return(melanoma_spec)
+}
 
-message("\nAverage internal correlation for each cluster:")
-print(sort(avg_cluster_cor, decreasing = TRUE))
+# =============================================================================
+# Module 3: Genes of Interest (Inquiry) Module
+# =============================================================================
 
-message(sprintf("\nCluster %s is the most tightly correlated with an average internal correlation of %.3f.",
-                names(which.max(avg_cluster_cor)), max(avg_cluster_cor, na.rm = TRUE)))
-all_gene_clusters[3]
+run_genes_of_interest_module <- function(depmap_obj, genes_of_interest, out_img_dir, out_res_dir) {
+  message("\n--- Running Genes of Interest Inquiry Module ---")
+  
+  # 1. Subset for Genes of Interest
+  valid_genes <- intersect(genes_of_interest, colnames(depmap_obj$data))
+  if(length(valid_genes) == 0) {
+    message("None of the genes of interest found in DepMap data.")
+    return(NULL)
+  }
+  
+  goi_data <- depmap_obj$data %>% 
+    select(ModelID, OncotreeLineage, all_of(valid_genes)) %>%
+    mutate(lineage_group = ifelse(OncotreeLineage == "Skin", "Skin", "Other"))
+  
+  # 2. Stats: Skin vs Others
+  stats_results <- data.frame()
+  for (g in valid_genes) {
+    skin_vals <- goi_data %>% filter(lineage_group == "Skin") %>% pull(!!sym(g))
+    other_vals <- goi_data %>% filter(lineage_group == "Other") %>% pull(!!sym(g))
+    
+    skin_vals <- skin_vals[!is.na(skin_vals)]
+    other_vals <- other_vals[!is.na(other_vals)]
+    
+    if (length(skin_vals) > 1 & length(other_vals) > 1) {
+      wt <- wilcox.test(skin_vals, other_vals)
+      stats_results <- rbind(stats_results, data.frame(
+        Gene = g,
+        Skin_Mean = mean(skin_vals),
+        Others_Mean = mean(other_vals),
+        Diff = mean(skin_vals) - mean(other_vals),
+        P_Value = wt$p.value
+      ))
+    }
+  }
+  stats_results$FDR <- p.adjust(stats_results$P_Value, method = "BH")
+  stats_results <- stats_results[order(stats_results$P_Value), ]
+  write.csv(stats_results, file.path(out_res_dir, "goi_dependency_stats_latest.csv"), row.names = FALSE)
+  print(head(stats_results))
+  
+  # 3. Visualization: Heatmap for Skin-lineage dependency
+  skin_only <- goi_data %>% 
+    filter(lineage_group == "Skin") %>%
+    column_to_rownames("ModelID") %>%
+    select(all_of(valid_genes)) %>%
+    as.matrix()
+  
+  pheatmap(
+    skin_only,
+    main = "Dependency of Genes of Interest in Skin Lineage Cell Lines",
+    show_colnames = TRUE,
+    show_rownames = FALSE,
+    color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+    filename = file.path(out_img_dir, "genes_of_interest_skin_dependency.png"),
+    width = 10, height = 7
+  )
+  
+  # 4. Visualization: Faceted Violin Plot for ALL Genes of Interest
+  # Order genes by P-Value for the plot
+  ordered_goi <- stats_results$Gene
+  goi_data_long <- goi_data %>%
+    pivot_longer(cols = all_of(valid_genes), names_to = "Gene", values_to = "Dependency") %>%
+    mutate(Gene = factor(Gene, levels = ordered_goi))
+  
+  # Add p-value labels to the plot data
+  p_labels <- stats_results %>%
+    mutate(p_label = ifelse(FDR < 0.001, "FDR < 0.001", paste0("FDR = ", round(FDR, 3)))) %>%
+    select(Gene, p_label)
+  
+  # Create the faceted plot
+  p_violin <- ggplot(goi_data_long, aes(x = lineage_group, y = Dependency, fill = lineage_group)) +
+    geom_violin(trim = FALSE, alpha = 0.6) +
+    geom_jitter(width = 0.2, alpha = 0.2, size = 0.5) +
+    facet_wrap(~Gene, scales = "free_y") +
+    geom_text(data = p_labels, aes(x = 1.5, y = 1.0, label = p_label), 
+              inherit.aes = FALSE, size = 3, fontface = "italic") +
+    labs(title = "Dependency Comparison: Skin vs Others",
+         subtitle = "Genes ordered by significance (Wilcoxon Test)",
+         x = "Lineage Group",
+         y = "Dependency Score (CERES)") +
+    theme_bw() +
+    theme(strip.background = element_rect(fill = "gray90"),
+          strip.text = element_text(face = "bold"),
+          legend.position = "none") +
+    scale_fill_manual(values = c("Skin" = "#d95f02", "Other" = "#7570b3"))
+
+  ggsave(file.path(out_img_dir, "all_goi_dependency_violin.png"), plot = p_violin, width = 14, height = 10)
+  
+  message("Genes of Interest Inquiry completed.")
+}
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+
+main <- function() {
+  # Paths
+  crispr_path <- "./Data/depmap/CRISPRGeneEffect_25Q2.csv"
+  model_path <- "./Data/depmap/Model.csv"
+  essential_path <- "./Data/depmap/common_essentials.csv"
+  out_img_dir <- "./Images/DepMap"
+  out_res_dir <- "./Data/Results/DepMap"
+  dir.create(out_img_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(out_res_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  # Genes of Interest
+  genes_of_interest <- unique(c(
+    "BRAF", "RET", "NTRK1", "NTRK2", "NTRK3",
+    "KIT", "MTAP", "MAP2K1", "NRG1", "NRAS",
+    "ERBB2", "TP53", "MDM2", "MTOR", "CCNE1", "CDKN2A",
+    "KRAS", "NF1", "FGFR1", "FGFR2", "MET",
+    "PIK3CA", "FBXW7", "CDK12", "ARID1A", "PPP2R1A", "FGFR3", "PTEN"
+  ))
+  
+  # 1. Load and Clean
+  depmap_obj <- load_and_annotate_depmap(crispr_path, model_path, essential_path)
+  
+  # 2. Run Module: Common Essentials
+  spec_results <- run_essential_genes_module(depmap_obj, out_img_dir)
+  
+  # 3. Run Module: Genes of Interest Inquiry
+  run_genes_of_interest_module(depmap_obj, genes_of_interest, out_img_dir, out_res_dir)
+  
+  message("\nPipeline completed successfully.")
+}
+
+# Run execution
+main()
